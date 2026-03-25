@@ -1,40 +1,36 @@
 #include <iostream>
-#include <filesystem>
-using namespace std;
-namespace fs = std::filesystem;
+#include "parser.h"
 
-void init_state() {
-    string home = getenv("HOME");
-    fs::create_directories(home + "/.docksmith/images");
-    fs::create_directories(home + "/.docksmith/layers");
-    fs::create_directories(home + "/.docksmith/cache");
-}
+using namespace std;
 
 int main(int argc, char* argv[]) {
 
-    init_state();
-
     if(argc < 2){
-        cout<<"Docksmith CLI\n";
+        cout<<"Docksmith CLI"<<endl;
         return 0;
     }
 
     string cmd = argv[1];
 
     if(cmd == "build"){
-        cout<<"Build command\n";
+
+        auto instructions = parseDocksmithfile("sample_app/Docksmithfile");
+
+        for(auto &i : instructions){
+            cout << i.type << " -> " << i.value << endl;
+        }
     }
     else if(cmd == "run"){
-        cout<<"Run command\n";
+        cout<<"Run command"<<endl;
     }
     else if(cmd == "images"){
-        cout<<"Images command\n";
+        cout<<"Images command"<<endl;
     }
     else if(cmd == "rmi"){
-        cout<<"Remove image command\n";
+        cout<<"Remove image command"<<endl;
     }
     else{
-        cout<<"Unknown command\n";
+        cout<<"Unknown command"<<endl;
     }
 
     return 0;

@@ -1,0 +1,6 @@
+FROM base:latest
+WORKDIR /app
+COPY . .
+RUN echo Hello
+ENV MSG=hi
+CMD ["echo","Done"]
