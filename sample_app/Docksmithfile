@@ -1,6 +1,6 @@
 FROM base:latest
 WORKDIR /app
 COPY . .
-RUN echo Hello
+RUN touch test.txt
 ENV MSG=hi
 CMD ["echo","Done"]
