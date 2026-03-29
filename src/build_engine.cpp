@@ -2,6 +2,8 @@
 #include <iostream>
 #include <cstdlib>
 #include "parser.h"
+#include "../include/layer.h"
+#include "../include/cache.h"
 #include <fstream>
 #include <ctime>
 
@@ -12,7 +14,6 @@ void executeBuild(){
     std::string tempRoot = "/tmp/docksmith_build";
     std::string currentDir = tempRoot;
 
-    // clean old build
     fs::remove_all(tempRoot);
     fs::create_directories(tempRoot);
 
@@ -22,52 +23,68 @@ void executeBuild(){
 
         std::cout << "Instruction: " << ins.type << " -> " << ins.value << std::endl;
 
-        // ✅ WORKDIR
+        // 🔥 Generate cache key (instruction based)
+        std::string cleanValue = ins.value;
+        cleanValue.erase(0, cleanValue.find_first_not_of(" "));
+        cleanValue.erase(cleanValue.find_last_not_of(" ") + 1);
+
+        std::string cacheInput = ins.type + "_" + cleanValue;
+        std::string key = generate_cache_key(cacheInput);
+
+        // ================= WORKDIR =================
         if(ins.type == "WORKDIR"){
 
             std::string path = ins.value;
-
-            // remove leading spaces
             path.erase(0, path.find_first_not_of(" "));
 
-            // remove leading '/'
             if(path.size() > 0 && path[0] == '/'){
                 path = path.substr(1);
             }
 
             currentDir = tempRoot + "/" + path;
-
             fs::create_directories(currentDir);
 
             std::cout << "WORKDIR set to " << currentDir << std::endl;
         }
 
-        // ✅ COPY
+        // ================= COPY =================
         else if(ins.type == "COPY"){
 
             std::cout << "Executing COPY..." << std::endl;
 
-            for (const auto & entry : fs::directory_iterator("sample_app")) {
-                fs::copy(entry.path(),
-                         currentDir + "/" + entry.path().filename().string(),
-                         fs::copy_options::recursive |
-                         fs::copy_options::overwrite_existing);
+            if(!check_cache(key)){
+
+                for (const auto & entry : fs::directory_iterator("sample_app")) {
+                    fs::copy(entry.path(),
+                             currentDir + "/" + entry.path().filename().string(),
+                             fs::copy_options::recursive |
+                             fs::copy_options::overwrite_existing);
+                }
+
+                std::string hash = create_layer(currentDir);
+                store_cache(key, hash);
             }
         }
 
-        // ✅ RUN
+        // ================= RUN =================
         else if(ins.type == "RUN"){
 
             std::cout << "Executing RUN..." << std::endl;
 
-            std::string command =
-                "cd " + currentDir + " && " + ins.value;
+            if(!check_cache(key)){
 
-            system(command.c_str());
+                std::string command =
+                    "cd " + currentDir + " && " + ins.value;
+
+                system(command.c_str());
+
+                std::string hash = create_layer(currentDir);
+                store_cache(key, hash);
+            }
         }
     }
 
-    // ✅ MANIFEST SYSTEM
+    // ================= MANIFEST =================
     std::string imageDir = std::string(getenv("HOME")) + "/.docksmith/images";
     fs::create_directories(imageDir);
 
