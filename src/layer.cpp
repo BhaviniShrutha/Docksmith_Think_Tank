@@ -20,10 +20,14 @@ string sha256(const string& data) {
 }
 
 string create_layer(const string& folderPath) {
+
     string combined = "";
 
     for (auto& p : fs::recursive_directory_iterator(folderPath)) {
         if (fs::is_regular_file(p.path())) {
+
+            combined += p.path().string(); // 🔥 filename included
+
             ifstream file(p.path(), ios::binary);
             string content((istreambuf_iterator<char>(file)), {});
             combined += content;
@@ -33,9 +37,10 @@ string create_layer(const string& folderPath) {
     string hash = sha256(combined);
 
     string home = getenv("HOME");
-    string path = home + "/.docksmith/layers/" + hash + ".layer";
+    string layerDir = home + "/.docksmith/layers/";
+    fs::create_directories(layerDir);
 
-    ofstream out(path, ios::binary);
+    ofstream out(layerDir + hash + ".layer");
     out << combined;
     out.close();
 

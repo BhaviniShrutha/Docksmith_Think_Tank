@@ -28,7 +28,7 @@ void executeBuild(){
         cleanValue.erase(0, cleanValue.find_first_not_of(" "));
         cleanValue.erase(cleanValue.find_last_not_of(" ") + 1);
 
-        std::string cacheInput = ins.type + "_" + cleanValue;
+        std::string cacheInput = ins.type + "_" + cleanValue + "_" + currentDir;
         std::string key = generate_cache_key(cacheInput);
 
         // ================= WORKDIR =================
