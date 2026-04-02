@@ -1,57 +1,71 @@
+#include "cache.h"
+#include "layer.h"
 #include <iostream>
-#include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <openssl/sha.h>
-#include "../include/cache.h"
+#include <filesystem>
 
-using namespace std;
 namespace fs = std::filesystem;
+using namespace std;
 
-string sha256_key(const string& data) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256((unsigned char*)data.c_str(), data.size(), hash);
+// ──────────────────────────────────────────────
+// Compute cache key from build state
+// ──────────────────────────────────────────────
+string computeCacheKey(const string& prevDigest,
+                       const string& instruction,
+                       const string& workdir,
+                       const map<string, string>& env,
+                       const vector<string>& fileHashes) {
+    string input;
+    input += prevDigest;
+    input += instruction;
+    input += workdir;
 
-    stringstream ss;
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        ss << hex << (int)hash[i];
+    // ENV state: sorted by key (std::map is already sorted)
+    string envStr;
+    for (auto& [k, v] : env) {
+        if (!envStr.empty()) envStr += "\n";
+        envStr += k + "=" + v;
     }
-    return ss.str();
-}
+    input += envStr;
 
-string generate_cache_key(const string& input) {
-    return sha256_key(input);
-}
-
-string get_cache_dir() {
-    string home = getenv("HOME");
-    return home + "/.docksmith/cache/";
-}
-
-bool check_cache(const string& key) {
-
-    string home = getenv("HOME");
-    string path = home + "/.docksmith/cache/" + key;
-
-    if (fs::exists(path)) {
-        cout << "[CACHE HIT]\n";
-        return true;
+    // COPY file hashes (already sorted by caller)
+    for (auto& h : fileHashes) {
+        input += h;
     }
 
-    cout << "[CACHE MISS]\n";
-    return false;
+    return sha256_hex(input);
 }
 
-void store_cache(const string& key, const string& layerHash) {
+// ──────────────────────────────────────────────
+// Check cache: return layer digest or ""
+// ──────────────────────────────────────────────
+string checkCache(const string& key) {
+    string home = getenv("HOME");
+    string cachePath = home + "/.docksmith/cache/" + key;
 
+    if (!fs::exists(cachePath)) return "";
+
+    ifstream f(cachePath);
+    string layerDigest;
+    getline(f, layerDigest);
+
+    // Verify the layer tar actually exists
+    string layerPath = home + "/.docksmith/layers/" + layerDigest + ".tar";
+    if (!fs::exists(layerPath)) return "";
+
+    return layerDigest;
+}
+
+// ──────────────────────────────────────────────
+// Store cache mapping
+// ──────────────────────────────────────────────
+void storeCache(const string& key, const string& layerDigest) {
     string home = getenv("HOME");
     string dir = home + "/.docksmith/cache/";
+    fs::create_directories(dir);
 
-    fs::create_directories(dir);   // 🔥 ADD THIS LINE
-
-    string path = dir + key;
-
-    ofstream file(path);
-    file << layerHash;
-    file.close();
+    ofstream f(dir + key);
+    f << layerDigest;
+    f.close();
 }

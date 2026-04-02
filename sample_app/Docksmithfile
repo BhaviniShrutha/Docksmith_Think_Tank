@@ -1,6 +1,7 @@
 FROM base:latest
 WORKDIR /app
+ENV GREETING=Hello
+ENV TARGET=World
 COPY . .
-RUN touch test.txt
-ENV MSG=hi
-CMD ["echo","Done"]
+RUN /bin/sh app.sh > output.txt
+CMD ["/bin/sh", "app.sh"]

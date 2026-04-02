@@ -1,3 +1,16 @@
-docksmith
-build/o
+# Build output
+build/
+*.o
 
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp files
+/tmp/
+
+# macOS
+.DS_Store
