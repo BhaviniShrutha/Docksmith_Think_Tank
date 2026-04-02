@@ -17,7 +17,8 @@ sudo apt update
 sudo apt install -y \
     build-essential \
     libssl-dev \
-    libarchive-dev
+    libarchive-dev \
+    wget
 ```
 
 ---
@@ -39,7 +40,7 @@ make clean
 
 ## One-Time Setup: Import a Base Image
 
-Docksmith does not pull images from the internet during a build. You must import a base image once before your first build.
+Docksmith does not pull images from the internet during a build. You must import a base image **once** before your first build.
 
 **Download Alpine Linux minimal rootfs (one-time):**
 
@@ -54,45 +55,41 @@ gunzip /tmp/alpine-rootfs.tar.gz
 **Import as `base:latest`:**
 
 ```bash
-./scripts/import_base.sh /tmp/alpine-rootfs.tar base latest
+sudo ./scripts/import_base.sh /tmp/alpine-rootfs.tar base latest
 ```
+
+> **Note**: `sudo` is required because all Docksmith state is stored under `/root/.docksmith/` when running with elevated privileges.
 
 This will:
 - Compute the SHA-256 digest of the tar
-- Store the layer in `~/.docksmith/layers/sha256:<hex>.tar`
-- Write the image manifest to `~/.docksmith/images/base_latest.json`
+- Store the layer in `/root/.docksmith/layers/sha256:<hex>.tar`
+- Write the image manifest to `/root/.docksmith/images/base_latest.json`
 
 ---
 
 ## Usage
 
+> **Sudo requirement**: All `docksmith` commands that read/write image state must be run with `sudo` for consistency (since `build` and `run` already require root for namespace isolation).
+
 ### Build an image
 
 ```bash
-./build/docksmith build -t myapp:latest ./sample_app/
+sudo ./build/docksmith build -t myapp:latest ./sample_app/
 ```
 
 With cache disabled:
 
 ```bash
-./build/docksmith build -t myapp:latest --no-cache ./sample_app/
+sudo ./build/docksmith build -t myapp:latest --no-cache ./sample_app/
 ```
-
-> **Note**: `build` steps that use `RUN` execute commands inside an isolated namespace. This requires **root** or `sudo`:
->
-> ```bash
-> sudo ./build/docksmith build -t myapp:latest ./sample_app/
-> ```
 
 ### List images
 
 ```bash
-./build/docksmith images
+sudo ./build/docksmith images
 ```
 
 ### Run a container
-
-> **Note**: `run` always requires **sudo** (uses `clone()` + `chroot()`):
 
 ```bash
 sudo ./build/docksmith run myapp:latest
@@ -113,37 +110,48 @@ sudo ./build/docksmith run myapp:latest /bin/sh -c "echo custom command"
 ### Remove an image
 
 ```bash
-./build/docksmith rmi myapp:latest
+sudo ./build/docksmith rmi myapp:latest
 ```
+
+> Shared layers (e.g. the Alpine base layer) are **not** deleted — only layers unique to the removed image are cleaned up.
 
 ---
 
 ## Full Demo Sequence
 
 ```bash
-# 1. Build
+# 1. Install dependencies (once)
+sudo apt install -y build-essential libssl-dev libarchive-dev wget
+
+# 2. Build the binary
 make
 
-# 2. Import base (once only)
-./scripts/import_base.sh /tmp/alpine-rootfs.tar base latest
+# 3. Download Alpine rootfs (once)
+wget -O /tmp/alpine-rootfs.tar.gz \
+  https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+gunzip /tmp/alpine-rootfs.tar.gz
 
-# 3. First build (all cache misses)
+# 4. Import base image (once)
+sudo ./scripts/import_base.sh /tmp/alpine-rootfs.tar base latest
+
+# 5. First build (all cache misses)
 sudo ./build/docksmith build -t myapp:latest ./sample_app/
 
-# 4. Second build (verify cache hits)
+# 6. Second build (all cache hits — much faster)
 sudo ./build/docksmith build -t myapp:latest ./sample_app/
 
-# 5. List images
-./build/docksmith images
+# 7. List images
+sudo ./build/docksmith images
 
-# 6. Run with default ENV
+# 8. Run with default ENV
 sudo ./build/docksmith run myapp:latest
 
-# 7. Run with ENV override
+# 9. Run with ENV override
 sudo ./build/docksmith run -e GREETING=Goodbye -e TARGET=Universe myapp:latest
 
-# 8. Remove image
-./build/docksmith rmi myapp:latest
+# 10. Remove image (base layer is preserved)
+sudo ./build/docksmith rmi myapp:latest
+sudo ./build/docksmith images   # base:latest still listed
 ```
 
 ---
@@ -174,7 +182,7 @@ CMD ["/bin/sh", "app.sh"]  # Default command when running the image
 3. **Cache** — for `COPY` and `RUN`:
    - Cache key = SHA-256 of `(prevLayerDigest + instruction + workdir + envState + srcFileHashes)`
    - First cache miss sets `cacheBroken = true` — all subsequent steps skip cache lookup.
-4. **COPY** — Files are staged and packed into a tar layer (only files being copied).
+4. **COPY** — Files staged into a directory mirroring the target path inside the image (e.g. `app/app.sh`), then packed into a tar layer.
 5. **RUN** — Delta capture:
    - Snapshot rootfs (all file hashes) **before** execution
    - Execute in isolated namespace via `clone(CLONE_NEWPID|CLONE_NEWNS|CLONE_NEWUTS) + chroot()`
@@ -185,7 +193,7 @@ CMD ["/bin/sh", "app.sh"]  # Default command when running the image
 
 ### Storage Layout
 ```
-~/.docksmith/
+/root/.docksmith/
 ├── images/          # Image manifests: <name>_<tag>.json
 ├── layers/          # Content-addressed layer tars: sha256:<hex>.tar
 └── cache/           # Cache index: <cacheKey> → <layerDigest>
