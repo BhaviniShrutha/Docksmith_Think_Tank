@@ -84,8 +84,8 @@ int runIsolated(const string& rootfs, const string& workdir,
     if (!stack) { perror("malloc"); return -1; }
 
     pid_t pid = clone(childFunc, (char*)stack + STACK_SIZE,
-                      CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | SIGCHLD,
-                      &data);
+                      CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWNET | SIGCHLD,
+                      &data);  // FIX 15: CLONE_NEWNET isolates network
     if (pid == -1) { perror("clone"); free(stack); return -1; }
 
     int status;
@@ -106,7 +106,7 @@ void runContainer(const string& name, const string& tag,
 
     if (!fs::exists(mpath)) {
         cerr << "Error: Image " << name << ":" << tag << " not found\n";
-        return;
+        exit(1);  // FIX 14
     }
 
     Manifest m = loadManifest(mpath);
@@ -121,7 +121,7 @@ void runContainer(const string& name, const string& tag,
         if (!fs::exists(tp)) {
             cerr << "Error: Missing layer " << layer.digest << "\n";
             fs::remove_all(rootfs);
-            return;
+            exit(1);  // FIX 14
         }
         extractLayer(tp, rootfs);
     }
@@ -143,7 +143,7 @@ void runContainer(const string& name, const string& tag,
     if (finalCmd.empty()) {
         cerr << "Error: No command specified and image has no default CMD\n";
         fs::remove_all(rootfs);
-        return;
+        exit(1);  // FIX 14
     }
 
     int exitCode = runIsolated(rootfs, m.workingDir, merged, finalCmd);
@@ -189,28 +189,13 @@ void removeImage(const string& name, const string& tag) {
 
     if (!fs::exists(mpath)) {
         cerr << "Error: Image " << name << ":" << tag << " not found\n";
-        return;
+        exit(1);  // FIX 14
     }
 
     Manifest m = loadManifest(mpath);
 
-    // Collect digests still referenced by OTHER images (shared base layers)
-    string imageDir = home + "/.docksmith/images/";
-    set<string> referenced;
-    if (fs::exists(imageDir)) {
-        for (auto& entry : fs::directory_iterator(imageDir)) {
-            if (entry.path() == mpath) continue;
-            if (entry.path().extension() != ".json") continue;
-            Manifest other = loadManifest(entry.path().string());
-            for (auto& l : other.layers) referenced.insert(l.digest);
-        }
-    }
-
+    // FIX 13: Delete all layers unconditionally (no reference counting per spec)
     for (auto& layer : m.layers) {
-        if (referenced.count(layer.digest)) {
-            cout << "Keeping shared layer: " << layer.digest << "\n";
-            continue;
-        }
         string lp = home + "/.docksmith/layers/" + layer.digest + ".tar";
         if (fs::exists(lp)) {
             fs::remove(lp);
