@@ -52,16 +52,44 @@ vector<Instruction> parseDocksmithfile(const string& path) {
         getline(ss, rest);
         if (!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
 
-        // FIX 1c: CMD must be JSON array form only
+        // ── FIX 3: Full JSON-array validation for CMD ─────────
         if (cmd == "CMD") {
-            size_t vs = rest.find_first_not_of(" \t");
-            size_t ve = rest.find_last_not_of(" \t");
-            if (vs == string::npos || rest[vs] != '[' || rest[ve] != ']') {
+            string val = rest;
+            // Trim leading/trailing whitespace
+            val.erase(0, val.find_first_not_of(" \t"));
+            if (!val.empty())
+                val.erase(val.find_last_not_of(" \t") + 1);
+
+            // Must start with [ and end with ]
+            if (val.empty() || val.front() != '[' || val.back() != ']') {
                 cerr << "Error line " << lineNum
                      << ": CMD requires JSON array form e.g. [\"/bin/sh\",\"app.sh\"]" << endl;
                 exit(1);
             }
+            // Must contain at least one quoted string element
+            if (val.find('"') == string::npos) {
+                cerr << "Error line " << lineNum
+                     << ": CMD JSON array must contain quoted strings e.g. [\"cmd\",\"arg\"]" << endl;
+                exit(1);
+            }
+            // Must not have unmatched brackets
+            int depth = 0;
+            for (char c : val) {
+                if (c == '[') depth++;
+                if (c == ']') depth--;
+                if (depth < 0) {
+                    cerr << "Error line " << lineNum
+                         << ": CMD has malformed JSON array" << endl;
+                    exit(1);
+                }
+            }
+            if (depth != 0) {
+                cerr << "Error line " << lineNum
+                     << ": CMD has unmatched brackets" << endl;
+                exit(1);
+            }
         }
+        // ── end CMD validation ─────────────────────────────────
 
         Instruction ins;
         ins.type       = cmd;
@@ -77,6 +105,20 @@ vector<Instruction> parseDocksmithfile(const string& path) {
         cerr << "Error: Docksmithfile must begin with a FROM instruction" << endl;
         exit(1);
     }
+
+    // ── FIX 5: Only one FROM is allowed ───────────────────────
+    bool seenFrom = false;
+    for (auto& ins : instructions) {
+        if (ins.type == "FROM") {
+            if (seenFrom) {
+                cerr << "Error line " << ins.lineNumber
+                     << ": only one FROM instruction is allowed" << endl;
+                exit(1);
+            }
+            seenFrom = true;
+        }
+    }
+    // ── end FROM check ─────────────────────────────────────────
 
     return instructions;
 }
