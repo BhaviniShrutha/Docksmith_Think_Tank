@@ -329,6 +329,8 @@ void executeBuild(const string& name, const string& tag,
     bool         cacheBroken = false;   // once true, all subsequent steps are misses
     vector<LayerEntry> collectedLayers;
 
+    string home = getenv("HOME");
+
     // ── FIX 2: Preserve `created` across ALL rebuilds ───────
     // Load the existing manifest (if any) before the build loop starts.
     // If it has a `created` field, always reuse it — regardless of whether
@@ -353,8 +355,6 @@ void executeBuild(const string& name, const string& tag,
     string tempRootfs = "/tmp/docksmith_build_" + to_string(getpid());
     fs::remove_all(tempRootfs);
     fs::create_directories(tempRootfs);
-
-    string home = getenv("HOME");
 
     for (size_t stepIdx = 0; stepIdx < instructions.size(); stepIdx++) {
         auto& ins = instructions[stepIdx];
@@ -713,8 +713,9 @@ void executeBuild(const string& name, const string& tag,
                 previousLayerDigest = newDigest;
             }
         }
+    } // end instruction loop
 
-
+    // 1. Serialize with digest="" to compute digest
     string draftJson = serializeManifest(name, tag, createdAt, "",
                                           currentEnv, currentCmd,
                                           currentWorkdir, collectedLayers);
