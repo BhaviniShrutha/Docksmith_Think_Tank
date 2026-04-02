@@ -39,7 +39,7 @@ string sha256_file(const string& path) {
 // ──────────────────────────────────────────────
 // Create a tar layer from a staging directory
 // ──────────────────────────────────────────────
-string createTarLayer(const string& stagingDir, const string& createdBy) {
+string createTarLayer(const string& stagingDir, const string& /*createdBy*/) {
     // 1. Collect all regular files
     vector<string> relPaths;
     for (auto& p : fs::recursive_directory_iterator(stagingDir)) {
@@ -233,7 +233,7 @@ Manifest loadManifest(const string& path) {
     // Parse config section
     auto cfgPos = json.find("\"config\"");
     if (cfgPos != string::npos) {
-        auto cfgEnd = json.find("}", json.find("{", cfgPos));
+        // (cfgEnd unused — using depth-counting loop below instead)
         // Find the second } (end of config object - may span lines)
         int depth = 0;
         size_t ce = cfgPos;
