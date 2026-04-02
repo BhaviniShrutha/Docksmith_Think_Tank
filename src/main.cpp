@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 
 using namespace std;
 
@@ -54,21 +55,34 @@ int main(int argc, char* argv[]) {
         map<string,string> envOvr;
         string nameTag;
         vector<string> cmdOvr;
-        bool foundImage = false;
 
+        // FIX 16: Two-pass -e parsing so -e works anywhere before name:tag
+        // Pass 1: collect all -e KEY=VALUE pairs; mark consumed indices
+        set<int> consumed;
         for (int i = 2; i < argc; i++) {
             string arg = argv[i];
-            if (!foundImage && arg == "-e" && i + 1 < argc) {
-                string ev = argv[++i];
+            if (arg == "-e" && i + 1 < argc) {
+                string ev = argv[i + 1];
                 auto eq = ev.find('=');
-                if (eq != string::npos) envOvr[ev.substr(0, eq)] = ev.substr(eq + 1);
-            } else if (!foundImage) {
-                nameTag = arg;
-                foundImage = true;
-            } else {
-                cmdOvr.push_back(arg);
+                if (eq != string::npos)
+                    envOvr[ev.substr(0, eq)] = ev.substr(eq + 1);
+                consumed.insert(i);
+                consumed.insert(i + 1);
+                i++;  // skip value
             }
         }
+        // Pass 2: first non-consumed arg = name:tag; rest = cmdOvr
+        bool foundImage = false;
+        for (int i = 2; i < argc; i++) {
+            if (consumed.count(i)) continue;
+            if (!foundImage) {
+                nameTag = argv[i];
+                foundImage = true;
+            } else {
+                cmdOvr.push_back(argv[i]);
+            }
+        }
+
         if (nameTag.empty()) { cerr << "Error: run requires <name:tag>\n"; return 1; }
         auto cp = nameTag.find(':');
         if (cp == string::npos) { cerr << "Error: Invalid name:tag format\n"; return 1; }
