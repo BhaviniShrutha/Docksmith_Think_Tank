@@ -62,14 +62,39 @@ fi
 FILE_SIZE=$(stat -c%s "$DEST_TAR")
 CREATED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
-# Build manifest JSON
+# FIX 12: Compute the manifest digest correctly.
+# Write a temp manifest with digest="" first, hash it, then write the real one.
 MANIFEST_PATH="${IMAGES_DIR}/${IMG_NAME}_${IMG_TAG}.json"
+TEMP_MANIFEST=$(mktemp)
 
+cat > "$TEMP_MANIFEST" <<EOF
+{
+  "name": "${IMG_NAME}",
+  "tag": "${IMG_TAG}",
+  "digest": "",
+  "created": "${CREATED}",
+  "config": {
+    "Env": [],
+    "Cmd": ["/bin/sh"],
+    "WorkingDir": "/"
+  },
+  "layers": [
+    {"digest": "${DIGEST}", "size": ${FILE_SIZE}, "createdBy": "import_base.sh"}
+  ]
+}
+EOF
+
+# Compute the SHA-256 of the temp manifest (with empty digest field)
+MANIFEST_HASH=$(sha256sum "$TEMP_MANIFEST" | awk '{print $1}')
+MANIFEST_DIGEST="sha256:${MANIFEST_HASH}"
+rm -f "$TEMP_MANIFEST"
+
+# Write the real manifest with the computed digest filled in
 cat > "$MANIFEST_PATH" <<EOF
 {
   "name": "${IMG_NAME}",
   "tag": "${IMG_TAG}",
-  "digest": "${DIGEST}",
+  "digest": "${MANIFEST_DIGEST}",
   "created": "${CREATED}",
   "config": {
     "Env": [],
@@ -85,6 +110,7 @@ EOF
 echo "Manifest written: ${MANIFEST_PATH}"
 echo ""
 echo "Import complete!"
-echo "  Image : ${IMG_NAME}:${IMG_TAG}"
-echo "  Digest: ${DIGEST:0:19}..."
-echo "  Size  : ${FILE_SIZE} bytes"
+echo "  Image  : ${IMG_NAME}:${IMG_TAG}"
+echo "  Digest : ${MANIFEST_DIGEST:0:19}..."
+echo "  Layer  : ${DIGEST:0:19}..."
+echo "  Size   : ${FILE_SIZE} bytes"
