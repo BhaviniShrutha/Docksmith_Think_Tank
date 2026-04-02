@@ -40,12 +40,14 @@ string sha256_file(const string& path) {
 // Create a tar layer from a staging directory
 // ──────────────────────────────────────────────
 string createTarLayer(const string& stagingDir, const string& /*createdBy*/) {
-    // 1. Collect all regular files
+    // 1. Collect all entries (regular files, symlinks, directories)
     vector<string> relPaths;
-    for (auto& p : fs::recursive_directory_iterator(stagingDir)) {
-        if (fs::is_regular_file(p)) {
-            relPaths.push_back(fs::relative(p.path(), stagingDir).string());
-        }
+    for (auto& p : fs::recursive_directory_iterator(stagingDir,
+             fs::directory_options::skip_permission_denied)) {
+        string rel = fs::relative(p.path(), stagingDir).string();
+        // Include regular files, symlinks, and directories
+        if (fs::is_regular_file(p) || fs::is_symlink(p.path()) || fs::is_directory(p))
+            relPaths.push_back(rel);
     }
     // 2. Sort lexicographically (reproducibility)
     sort(relPaths.begin(), relPaths.end());
@@ -65,26 +67,48 @@ string createTarLayer(const string& stagingDir, const string& /*createdBy*/) {
         string fullPath = stagingDir + "/" + rel;
 
         struct stat st;
-        if (::stat(fullPath.c_str(), &st) != 0) continue;
+        if (::lstat(fullPath.c_str(), &st) != 0) continue;  // lstat to detect symlinks
 
         struct archive_entry* entry = archive_entry_new();
         archive_entry_set_pathname(entry, rel.c_str());
-        archive_entry_set_size(entry, st.st_size);
-        archive_entry_set_filetype(entry, AE_IFREG);
-        archive_entry_set_perm(entry, st.st_mode & 07777);
-        // Zero timestamps for reproducibility
+
+        // FIX 11: Normalize all metadata for reproducibility
+        archive_entry_set_uid(entry, 0);
+        archive_entry_set_gid(entry, 0);
+        archive_entry_set_uname(entry, "root");
+        archive_entry_set_gname(entry, "root");
         archive_entry_set_mtime(entry, 0, 0);
         archive_entry_set_atime(entry, 0, 0);
         archive_entry_set_ctime(entry, 0, 0);
 
-        archive_write_header(a, entry);
+        if (S_ISLNK(st.st_mode)) {
+            // FIX 10 support: symlink entry
+            char linkBuf[4096] = {};
+            ssize_t len = ::readlink(fullPath.c_str(), linkBuf, sizeof(linkBuf) - 1);
+            if (len < 0) { archive_entry_free(entry); continue; }
+            archive_entry_set_filetype(entry, AE_IFLNK);
+            archive_entry_set_symlink(entry, linkBuf);
+            archive_entry_set_size(entry, 0);
+            archive_entry_set_perm(entry, 0777);
+            archive_write_header(a, entry);
+        } else if (S_ISDIR(st.st_mode)) {
+            // FIX 10 support: directory entry
+            archive_entry_set_filetype(entry, AE_IFDIR);
+            archive_entry_set_size(entry, 0);
+            archive_entry_set_perm(entry, st.st_mode & 07777);
+            archive_write_header(a, entry);
+        } else {
+            // Regular file (including whiteout files)
+            archive_entry_set_filetype(entry, AE_IFREG);
+            archive_entry_set_size(entry, st.st_size);
+            archive_entry_set_perm(entry, st.st_mode & 07777);
+            archive_write_header(a, entry);
 
-        ifstream f(fullPath, ios::binary);
-        char buf[8192];
-        while (f) {
-            f.read(buf, sizeof(buf));
-            if (f.gcount() > 0) {
-                archive_write_data(a, buf, f.gcount());
+            ifstream f(fullPath, ios::binary);
+            char buf[8192];
+            while (f) {
+                f.read(buf, sizeof(buf));
+                if (f.gcount() > 0) archive_write_data(a, buf, f.gcount());
             }
         }
 
