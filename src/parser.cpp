@@ -33,6 +33,9 @@ vector<Instruction> parseDocksmithfile(const string& path) {
         // Skip blank lines and comments
         if (line.empty() || line[0] == '#') continue;
 
+        // FIX 1a: Save the full trimmed line as rawText BEFORE splitting
+        string rawLine = line;
+
         // Extract instruction token
         stringstream ss(line);
         string cmd;
@@ -44,17 +47,35 @@ vector<Instruction> parseDocksmithfile(const string& path) {
             exit(1);
         }
 
-        Instruction ins;
-        ins.type = cmd;
-        ins.lineNumber = lineNum;
-
         // Get rest of line, trim leading space
         string rest;
         getline(ss, rest);
         if (!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
-        ins.value = rest;
+
+        // FIX 1c: CMD must be JSON array form only
+        if (cmd == "CMD") {
+            size_t vs = rest.find_first_not_of(" \t");
+            size_t ve = rest.find_last_not_of(" \t");
+            if (vs == string::npos || rest[vs] != '[' || rest[ve] != ']') {
+                cerr << "Error line " << lineNum
+                     << ": CMD requires JSON array form e.g. [\"/bin/sh\",\"app.sh\"]" << endl;
+                exit(1);
+            }
+        }
+
+        Instruction ins;
+        ins.type       = cmd;
+        ins.value      = rest;
+        ins.rawText    = rawLine;   // FIX 1a
+        ins.lineNumber = lineNum;
 
         instructions.push_back(ins);
+    }
+
+    // FIX 1b: FROM must be first instruction
+    if (instructions.empty() || instructions[0].type != "FROM") {
+        cerr << "Error: Docksmithfile must begin with a FROM instruction" << endl;
+        exit(1);
     }
 
     return instructions;
