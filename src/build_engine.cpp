@@ -413,8 +413,17 @@ void executeBuild(const string& name, const string& tag,
                 fs::remove_all(tmpStage);
                 fs::create_directories(tmpStage);
 
+                // Strip leading '/' from dstAbs so we can use it as a relative
+                // path inside tmpStage — e.g. "/app" -> "app"
+                // This ensures the tar layer preserves full paths like "app/app.sh"
+                // so they extract correctly into the rootfs.
+                string dstRelPath = dstAbs;
+                if (!dstRelPath.empty() && dstRelPath[0] == '/')
+                    dstRelPath = dstRelPath.substr(1);
+
                 for (auto& [abs, rel] : srcFiles) {
-                    fs::path dst = fs::path(tmpStage) / rel;
+                    // Stage at tmpStage/<dstRelPath>/<rel>  e.g. tmpStage/app/app.sh
+                    fs::path dst = fs::path(tmpStage) / dstRelPath / rel;
                     fs::create_directories(dst.parent_path());
                     fs::copy_file(abs, dst, fs::copy_options::overwrite_existing);
                     // Also copy into tempRootfs

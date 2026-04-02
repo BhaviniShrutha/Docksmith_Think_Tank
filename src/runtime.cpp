@@ -11,6 +11,7 @@
 #include <sys/mount.h>
 #include <unistd.h>
 #include <signal.h>
+#include <set>
 
 namespace fs = std::filesystem;
 using namespace std;
@@ -193,7 +194,23 @@ void removeImage(const string& name, const string& tag) {
 
     Manifest m = loadManifest(mpath);
 
+    // Collect digests still referenced by OTHER images (shared base layers)
+    string imageDir = home + "/.docksmith/images/";
+    set<string> referenced;
+    if (fs::exists(imageDir)) {
+        for (auto& entry : fs::directory_iterator(imageDir)) {
+            if (entry.path() == mpath) continue;
+            if (entry.path().extension() != ".json") continue;
+            Manifest other = loadManifest(entry.path().string());
+            for (auto& l : other.layers) referenced.insert(l.digest);
+        }
+    }
+
     for (auto& layer : m.layers) {
+        if (referenced.count(layer.digest)) {
+            cout << "Keeping shared layer: " << layer.digest << "\n";
+            continue;
+        }
         string lp = home + "/.docksmith/layers/" + layer.digest + ".tar";
         if (fs::exists(lp)) {
             fs::remove(lp);
