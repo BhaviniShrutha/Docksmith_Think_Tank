@@ -160,6 +160,25 @@ void extractLayer(const string& tarPath, const string& destDir) {
     struct archive_entry* entry;
     while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
         string origPath = archive_entry_pathname(entry);
+
+        // ── FIX 1: OCI whiteout handling ──────────────────────
+        // A whiteout entry (.wh.<name>) marks the deletion of the real
+        // file <name> from a lower layer. We must delete the real file
+        // and NOT extract the whiteout marker itself.
+        string filename  = fs::path(origPath).filename().string();
+        string parentDir = fs::path(origPath).parent_path().string();
+        if (filename.size() > 4 && filename.substr(0, 4) == ".wh.") {
+            string realName = filename.substr(4); // strip .wh. prefix
+            fs::path toDelete = fs::path(destDir) / parentDir / realName;
+            if (fs::exists(toDelete)) {
+                fs::remove_all(toDelete);
+            }
+            // Skip this entry — do not write the whiteout file to disk
+            archive_read_data_skip(a);
+            continue;
+        }
+        // ── end whiteout handling ──────────────────────────────
+
         string fullPath = destDir + "/" + origPath;
         archive_entry_set_pathname(entry, fullPath.c_str());
 
