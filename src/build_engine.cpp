@@ -135,24 +135,51 @@ static void stageWhiteouts(const vector<string>& deletedPaths,
 // ─────────────────────────────────────────────────────────────
 static vector<string> resolveGlob(const string& contextDir, const string& pattern) {
     vector<string> results;
-    bool hasDoubleStar = pattern.find("**") != string::npos;
-    bool hasGlob = pattern.find('*') != string::npos || pattern.find('?') != string::npos;
+
+    // Handle . or * — copy everything recursively
+    if (pattern == "." || pattern == "*") {
+        for (auto& entry : fs::recursive_directory_iterator(contextDir,
+                 fs::directory_options::skip_permission_denied)) {
+            if (fs::is_regular_file(entry.path()) || fs::is_symlink(entry.path())) {
+                results.push_back(entry.path().string());
+            }
+        }
+        sort(results.begin(), results.end());
+        return results;
+    }
+
+    bool recursive = (pattern.find("**") != string::npos);
+    bool hasGlob   = (pattern.find('*') != string::npos || pattern.find('?') != string::npos);
 
     if (!hasGlob) {
         // Plain path — return as-is if it exists
         string full = contextDir + "/" + pattern;
         if (fs::exists(full)) results.push_back(full);
-    } else {
+    } else if (recursive) {
+        // ** means match across ALL directory levels — use recursive_directory_iterator.
+        // Strip the **/ prefix from the pattern for filename matching.
+        string matchPat = pattern;
+        size_t starstar = matchPat.find("**/");
+        if (starstar != string::npos) {
+            matchPat = matchPat.substr(starstar + 3);
+        }
         for (auto& entry : fs::recursive_directory_iterator(contextDir,
                  fs::directory_options::skip_permission_denied)) {
-            string rel = fs::relative(entry.path(), contextDir).string();
-            // For single *, skip entries in subdirectories
-            if (!hasDoubleStar && entry.path().parent_path() != fs::path(contextDir))
-                continue;
-            if (fnmatch(pattern.c_str(), rel.c_str(), FNM_PATHNAME) == 0)
+            string filename = entry.path().filename().string();
+            if (fnmatch(matchPat.c_str(), filename.c_str(), 0) == 0) {
                 results.push_back(entry.path().string());
+            }
+        }
+    } else {
+        // * or ? without ** — match in immediate directory only (non-recursive)
+        for (auto& entry : fs::directory_iterator(contextDir)) {
+            string filename = entry.path().filename().string();
+            if (fnmatch(pattern.c_str(), filename.c_str(), 0) == 0) {
+                results.push_back(entry.path().string());
+            }
         }
     }
+
     sort(results.begin(), results.end());
     return results;
 }
@@ -195,6 +222,25 @@ static vector<string> parseCmd(const string& val) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// FIX 6: Escape special characters for JSON string values
+// ─────────────────────────────────────────────────────────────
+static string jsonEscape(const string& s) {
+    string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────
 // Helper: Write manifest JSON
 // ─────────────────────────────────────────────────────────────
 static string serializeManifest(const string& name, const string& tag,
@@ -205,10 +251,10 @@ static string serializeManifest(const string& name, const string& tag,
                                   const vector<LayerEntry>& layers) {
     ostringstream j;
     j << "{\n";
-    j << "  \"name\": \"" << name << "\",\n";
-    j << "  \"tag\": \"" << tag << "\",\n";
-    j << "  \"digest\": \"" << digest << "\",\n";
-    j << "  \"created\": \"" << created << "\",\n";
+    j << "  \"name\": \""    << jsonEscape(name)    << "\",\n";
+    j << "  \"tag\": \""     << jsonEscape(tag)     << "\",\n";
+    j << "  \"digest\": \""  << jsonEscape(digest)  << "\",\n";
+    j << "  \"created\": \"" << jsonEscape(created) << "\",\n";
     j << "  \"config\": {\n";
 
     // Env array
@@ -216,7 +262,7 @@ static string serializeManifest(const string& name, const string& tag,
     bool first = true;
     for (auto& [k, v] : env) {
         if (!first) j << ", ";
-        j << "\"" << k << "=" << v << "\"";
+        j << "\"" << jsonEscape(k) << "=" << jsonEscape(v) << "\"";
         first = false;
     }
     j << "],\n";
@@ -226,21 +272,21 @@ static string serializeManifest(const string& name, const string& tag,
     first = true;
     for (auto& c : cmd) {
         if (!first) j << ", ";
-        j << "\"" << c << "\"";
+        j << "\"" << jsonEscape(c) << "\"";
         first = false;
     }
     j << "],\n";
 
-    j << "    \"WorkingDir\": \"" << workingDir << "\"\n";
+    j << "    \"WorkingDir\": \"" << jsonEscape(workingDir) << "\"\n";
     j << "  },\n";
 
     // Layers array
     j << "  \"layers\": [\n";
     for (size_t i = 0; i < layers.size(); i++) {
         auto& l = layers[i];
-        j << "    {\"digest\": \"" << l.digest
+        j << "    {\"digest\": \"" << jsonEscape(l.digest)
           << "\", \"size\": " << l.size
-          << ", \"createdBy\": \"" << l.createdBy << "\"}";
+          << ", \"createdBy\": \"" << jsonEscape(l.createdBy) << "\"}";
         if (i + 1 < layers.size()) j << ",";
         j << "\n";
     }
@@ -282,7 +328,26 @@ void executeBuild(const string& name, const string& tag,
     string       previousLayerDigest = "";
     bool         cacheBroken = false;   // once true, all subsequent steps are misses
     vector<LayerEntry> collectedLayers;
-    string       createdAt = "";        // set on first build; preserved on full cache hit
+
+    // ── FIX 2: Preserve `created` across ALL rebuilds ───────
+    // Load the existing manifest (if any) before the build loop starts.
+    // If it has a `created` field, always reuse it — regardless of whether
+    // this rebuild is a cache hit or a cache miss.
+    // Only fall through to utcNow() on the very first build, when no
+    // manifest file exists yet.
+    string createdAt = "";
+    {
+        string existingManifestPath = home + "/.docksmith/images/" + name + "_" + tag + ".json";
+        if (fs::exists(existingManifestPath)) {
+            Manifest existing = loadManifest(existingManifestPath);
+            if (!existing.created.empty()) {
+                createdAt = existing.created; // always reuse if exists
+            }
+        }
+        if (createdAt.empty()) {
+            createdAt = utcNow(); // first build only
+        }
+    }
 
     // Temp rootfs (accumulate layers as we build)
     string tempRootfs = "/tmp/docksmith_build_" + to_string(getpid());
@@ -648,25 +713,8 @@ void executeBuild(const string& name, const string& tag,
                 previousLayerDigest = newDigest;
             }
         }
-    } // end instruction loop
 
-    // ── FIX 6: Preserve 'created' timestamp on full cache-hit rebuild ──
-    // If all steps were cache hits (cacheBroken is still false), try to
-    // load the existing manifest's created timestamp.
-    string existingCreated;
-    {
-        string imagePath0 = home + "/.docksmith/images/" + name + "_" + tag + ".json";
-        if (fs::exists(imagePath0)) {
-            Manifest existing = loadManifest(imagePath0);
-            existingCreated = existing.created;
-        }
-    }
-    bool allCacheHits = !cacheBroken;
-    if (createdAt.empty()) {
-        createdAt = (allCacheHits && !existingCreated.empty()) ? existingCreated : utcNow();
-    }
 
-    // 1. Serialize with digest="" to compute digest
     string draftJson = serializeManifest(name, tag, createdAt, "",
                                           currentEnv, currentCmd,
                                           currentWorkdir, collectedLayers);
