@@ -1,53 +1,83 @@
-#include "../include/runtime.h"
+#include "build_engine.h"
+#include "runtime.h"
 #include <iostream>
-#include "parser.h"
+#include <string>
+#include <vector>
+#include <map>
 
 using namespace std;
 
-// declare build engine function
-void executeBuild();
+static void printUsage() {
+    cerr << "Usage:\n"
+         << "  docksmith build -t <name:tag> [--no-cache] <context_dir>\n"
+         << "  docksmith images\n"
+         << "  docksmith rmi <name:tag>\n"
+         << "  docksmith run [-e KEY=VALUE ...] <name:tag> [cmd...]\n";
+}
 
 int main(int argc, char* argv[]) {
-
-    if (argc < 2) {
-        cout << "Docksmith CLI" << endl;
-        cout << "Commands: build | run | images | rmi" << endl;
-        return 0;
-    }
+    if (argc < 2) { printUsage(); return 1; }
 
     string cmd = argv[1];
 
     if (cmd == "build") {
-        cout << "Starting build..." << endl;
-        executeBuild();  // call real build engine
-    }
-    else if (cmd == "run") {
-        if (argc < 3) {
-            cout << "Usage: docksmith run name:tag\n";
-            return 1;
+        string nameTag, contextDir;
+        bool noCache = false;
+
+        for (int i = 2; i < argc; i++) {
+            string arg = argv[i];
+            if (arg == "-t" && i + 1 < argc)       nameTag = argv[++i];
+            else if (arg == "--no-cache")            noCache = true;
+            else                                     contextDir = arg;
         }
 
-        string input = argv[2];
-
-        size_t pos = input.find(":");
-        if (pos == string::npos) {
-            cout << "Invalid format\n";
-            return 1;
+        if (nameTag.empty() || contextDir.empty()) {
+            cerr << "Error: build requires -t <name:tag> and <context_dir>\n";
+            printUsage(); return 1;
         }
+        auto cp = nameTag.find(':');
+        if (cp == string::npos) { cerr << "Error: Invalid name:tag format\n"; return 1; }
 
-        string name = input.substr(0, pos);
-        string tag = input.substr(pos + 1);
-
-        run_container(name, tag);
+        executeBuild(nameTag.substr(0, cp), nameTag.substr(cp + 1), contextDir, noCache);
     }
     else if (cmd == "images") {
-        cout << "Images command (later phase)" << endl;
+        listImages();
     }
     else if (cmd == "rmi") {
-        cout << "Remove image command (later phase)" << endl;
+        if (argc < 3) { cerr << "Error: rmi requires <name:tag>\n"; return 1; }
+        string nt = argv[2];
+        auto cp = nt.find(':');
+        if (cp == string::npos) { cerr << "Error: Invalid name:tag format\n"; return 1; }
+        removeImage(nt.substr(0, cp), nt.substr(cp + 1));
+    }
+    else if (cmd == "run") {
+        map<string,string> envOvr;
+        string nameTag;
+        vector<string> cmdOvr;
+        bool foundImage = false;
+
+        for (int i = 2; i < argc; i++) {
+            string arg = argv[i];
+            if (!foundImage && arg == "-e" && i + 1 < argc) {
+                string ev = argv[++i];
+                auto eq = ev.find('=');
+                if (eq != string::npos) envOvr[ev.substr(0, eq)] = ev.substr(eq + 1);
+            } else if (!foundImage) {
+                nameTag = arg;
+                foundImage = true;
+            } else {
+                cmdOvr.push_back(arg);
+            }
+        }
+        if (nameTag.empty()) { cerr << "Error: run requires <name:tag>\n"; return 1; }
+        auto cp = nameTag.find(':');
+        if (cp == string::npos) { cerr << "Error: Invalid name:tag format\n"; return 1; }
+
+        runContainer(nameTag.substr(0, cp), nameTag.substr(cp + 1), envOvr, cmdOvr);
     }
     else {
-        cout << "Unknown command" << endl;
+        cerr << "Error: Unknown command '" << cmd << "'\n";
+        printUsage(); return 1;
     }
 
     return 0;
