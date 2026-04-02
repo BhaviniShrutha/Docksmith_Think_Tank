@@ -29,7 +29,25 @@ struct ChildData {
 static int childFunc(void* arg) {
     ChildData* d = (ChildData*)arg;
 
+    // ── FIX 7: Make mount namespace private before chroot ──────
+    // Bind-mount the rootfs onto itself to anchor it in our private
+    // mount namespace, then mark it private so writes don't propagate
+    // back to the host mount tree.
+    if (mount(d->rootfs, d->rootfs, nullptr, MS_BIND | MS_REC, nullptr) != 0) {
+        perror("mount bind");
+        _exit(1);
+    }
+    if (mount(nullptr, d->rootfs, nullptr, MS_PRIVATE | MS_REC, nullptr) != 0) {
+        perror("mount private");
+        _exit(1);
+    }
+    // ── end mount isolation ─────────────────────────────────────
+
     if (chroot(d->rootfs) != 0) { perror("chroot"); _exit(1); }
+
+    // Re-lock the new root's mount namespace as private
+    mount(nullptr, "/", nullptr, MS_PRIVATE | MS_REC, nullptr);
+
     if (chdir(d->workdir) != 0) { perror("chdir"); _exit(1); }
 
     // Set environment
