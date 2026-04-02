@@ -5,6 +5,7 @@
 struct Instruction {
     std::string type;
     std::string value;
+    std::string rawText;   // exact line as written (after leading-whitespace strip)
     int lineNumber;
 };
 
