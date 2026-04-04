@@ -3,5 +3,5 @@ WORKDIR /app
 ENV GREETING=Hello
 ENV TARGET=World
 COPY . .
-RUN /bin/sh app.sh > output.txt
+RUN BUILD_MODE=1 /bin/sh app.sh > output.txt
 CMD ["/bin/sh", "app.sh"]
