@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
         auto cp = nameTag.find(':');
         if (cp == string::npos) { cerr << "Error: Invalid name:tag format\n"; return 1; }
 
-        runContainer(nameTag.substr(0, cp), nameTag.substr(cp + 1), envOvr, cmdOvr);
+        return runContainer(nameTag.substr(0, cp), nameTag.substr(cp + 1), envOvr, cmdOvr);
     }
     else {
         cerr << "Error: Unknown command '" << cmd << "'\n";

@@ -25,6 +25,8 @@
 #include <unistd.h>
 #include <fnmatch.h>
 #include <sys/stat.h>
+#include <cctype>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 using namespace std;
@@ -88,12 +90,6 @@ computeFullDelta(const map<string, string>& before,
     return {changed, deleted};
 }
 
-// Legacy wrapper used by older COPY path (returns changed paths only)
-static vector<string> computeDelta(const map<string, string>& before,
-                                    const map<string, string>& after) {
-    return computeFullDelta(before, after).first;
-}
-
 // ─────────────────────────────────────────────────────────────
 // Helper: Stage changed/new files + whiteouts for deleted paths
 // ─────────────────────────────────────────────────────────────
@@ -133,50 +129,87 @@ static void stageWhiteouts(const vector<string>& deletedPaths,
 // ─────────────────────────────────────────────────────────────
 // FIX 7: Resolve COPY sources with glob support (* and **)
 // ─────────────────────────────────────────────────────────────
-static vector<string> resolveGlob(const string& contextDir, const string& pattern) {
-    vector<string> results;
+static bool hasGlobChars(const string& pattern) {
+    return pattern.find('*') != string::npos || pattern.find('?') != string::npos;
+}
 
-    // Handle . or * — copy everything recursively
-    if (pattern == "." || pattern == "*") {
-        for (auto& entry : fs::recursive_directory_iterator(contextDir,
-                 fs::directory_options::skip_permission_denied)) {
-            if (fs::is_regular_file(entry.path()) || fs::is_symlink(entry.path())) {
-                results.push_back(entry.path().string());
+static vector<string> splitPathSegments(const string& path) {
+    vector<string> segments;
+    string current;
+    for (char c : path) {
+        if (c == '/') {
+            if (!current.empty()) {
+                segments.push_back(current);
+                current.clear();
             }
+        } else {
+            current += c;
         }
-        sort(results.begin(), results.end());
-        return results;
+    }
+    if (!current.empty()) segments.push_back(current);
+    return segments;
+}
+
+static bool matchGlobSegments(const vector<string>& patternSegs, size_t pi,
+                              const vector<string>& pathSegs, size_t si) {
+    if (pi == patternSegs.size()) return si == pathSegs.size();
+
+    if (patternSegs[pi] == "**") {
+        if (pi + 1 == patternSegs.size()) return true;
+        for (size_t next = si; next <= pathSegs.size(); next++) {
+            if (matchGlobSegments(patternSegs, pi + 1, pathSegs, next)) return true;
+        }
+        return false;
     }
 
-    bool recursive = (pattern.find("**") != string::npos);
-    bool hasGlob   = (pattern.find('*') != string::npos || pattern.find('?') != string::npos);
+    if (si == pathSegs.size()) return false;
+    if (fnmatch(patternSegs[pi].c_str(), pathSegs[si].c_str(), 0) != 0) return false;
+    return matchGlobSegments(patternSegs, pi + 1, pathSegs, si + 1);
+}
 
-    if (!hasGlob) {
-        // Plain path — return as-is if it exists
-        string full = contextDir + "/" + pattern;
-        if (fs::exists(full)) results.push_back(full);
-    } else if (recursive) {
-        // ** means match across ALL directory levels — use recursive_directory_iterator.
-        // Strip the **/ prefix from the pattern for filename matching.
-        string matchPat = pattern;
-        size_t starstar = matchPat.find("**/");
-        if (starstar != string::npos) {
-            matchPat = matchPat.substr(starstar + 3);
+static vector<string> collectRecursiveSources(const fs::path& root) {
+    vector<string> results;
+    if (fs::is_regular_file(root) || fs::is_symlink(root)) {
+        results.push_back(root.string());
+        return results;
+    }
+    if (!fs::is_directory(root)) return results;
+
+    for (auto& entry : fs::recursive_directory_iterator(root,
+             fs::directory_options::skip_permission_denied)) {
+        if (fs::is_regular_file(entry.path()) || fs::is_symlink(entry.path())) {
+            results.push_back(entry.path().string());
         }
-        for (auto& entry : fs::recursive_directory_iterator(contextDir,
-                 fs::directory_options::skip_permission_denied)) {
-            string filename = entry.path().filename().string();
-            if (fnmatch(matchPat.c_str(), filename.c_str(), 0) == 0) {
-                results.push_back(entry.path().string());
-            }
-        }
-    } else {
-        // * or ? without ** — match in immediate directory only (non-recursive)
-        for (auto& entry : fs::directory_iterator(contextDir)) {
-            string filename = entry.path().filename().string();
-            if (fnmatch(pattern.c_str(), filename.c_str(), 0) == 0) {
-                results.push_back(entry.path().string());
-            }
+    }
+    sort(results.begin(), results.end());
+    return results;
+}
+
+static string globLiteralBase(const string& pattern) {
+    size_t firstGlob = pattern.find_first_of("*?");
+    if (firstGlob == string::npos) return pattern;
+
+    size_t slash = pattern.rfind('/', firstGlob);
+    if (slash == string::npos) return "";
+    return pattern.substr(0, slash);
+}
+
+static vector<string> resolveGlob(const string& contextDir, const string& pattern) {
+    vector<string> results;
+    if (pattern == "." || pattern == "./") {
+        return collectRecursiveSources(contextDir);
+    }
+
+    string normalizedPattern = fs::path(pattern).lexically_normal().generic_string();
+    vector<string> patternSegs = splitPathSegments(normalizedPattern);
+    if (patternSegs.empty()) return results;
+
+    for (auto& entry : fs::recursive_directory_iterator(contextDir,
+             fs::directory_options::skip_permission_denied)) {
+        if (!fs::is_regular_file(entry.path()) && !fs::is_symlink(entry.path())) continue;
+        string rel = fs::relative(entry.path(), contextDir).generic_string();
+        if (matchGlobSegments(patternSegs, 0, splitPathSegments(rel), 0)) {
+            results.push_back(entry.path().string());
         }
     }
 
@@ -194,31 +227,77 @@ static pair<string,string> parseEnv(const string& kv) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Helper: Parse CMD value — supports ["bin","arg"] and plain text
+// Helper: Parse CMD JSON array form.
 // ─────────────────────────────────────────────────────────────
 static vector<string> parseCmd(const string& val) {
     vector<string> result;
-    // JSON array form: ["sh", "-c", "echo hi"]
-    if (!val.empty() && val[0] == '[') {
-        string s = val;
-        // Remove [ and ]
-        s.erase(remove(s.begin(), s.end(), '['), s.end());
-        s.erase(remove(s.begin(), s.end(), ']'), s.end());
-        // Split by comma, strip quotes
-        stringstream ss(s);
-        string token;
-        while (getline(ss, token, ',')) {
-            // Trim whitespace and quotes
-            auto start = token.find_first_not_of(" \t\"");
-            auto end = token.find_last_not_of(" \t\"");
-            if (start != string::npos)
-                result.push_back(token.substr(start, end - start + 1));
-        }
-    } else {
-        // Shell form: wrap in ["sh", "-c", val]
-        result = {"/bin/sh", "-c", val};
+    size_t i = 0;
+
+    auto skipWs = [&]() {
+        while (i < val.size() && isspace(static_cast<unsigned char>(val[i]))) i++;
+    };
+
+    skipWs();
+    if (i >= val.size() || val[i] != '[') {
+        throw runtime_error("CMD requires JSON array form");
     }
-    return result;
+    i++;
+
+    skipWs();
+    if (i < val.size() && val[i] == ']') return result;
+
+    while (i < val.size()) {
+        skipWs();
+        if (i >= val.size() || val[i] != '"') {
+            throw runtime_error("CMD array elements must be strings");
+        }
+
+        i++;
+        string token;
+        while (i < val.size()) {
+            char c = val[i++];
+            if (c == '"') break;
+            if (c == '\\') {
+                if (i >= val.size()) throw runtime_error("CMD has invalid escape sequence");
+                char esc = val[i++];
+                switch (esc) {
+                    case '"': token += '"'; break;
+                    case '\\': token += '\\'; break;
+                    case '/': token += '/'; break;
+                    case 'b': token += '\b'; break;
+                    case 'f': token += '\f'; break;
+                    case 'n': token += '\n'; break;
+                    case 'r': token += '\r'; break;
+                    case 't': token += '\t'; break;
+                    default:
+                        throw runtime_error("CMD contains unsupported escape sequence");
+                }
+            } else {
+                token += c;
+            }
+        }
+
+        if (i == 0 || val[i - 1] != '"') {
+            throw runtime_error("CMD has unterminated string");
+        }
+
+        result.push_back(token);
+        skipWs();
+        if (i >= val.size()) break;
+        if (val[i] == ',') {
+            i++;
+            continue;
+        }
+        if (val[i] == ']') {
+            i++;
+            skipWs();
+            if (i != val.size()) throw runtime_error("CMD has trailing characters");
+            return result;
+        }
+        throw runtime_error("CMD must be a comma-separated JSON string array");
+    }
+
+    throw runtime_error("CMD has unmatched brackets");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -444,7 +523,13 @@ void executeBuild(const string& name, const string& tag,
 
         // ─── CMD ─────────────────────────────────────────────
         else if (ins.type == "CMD") {
-            currentCmd = parseCmd(ins.value);
+            try {
+                currentCmd = parseCmd(ins.value);
+            } catch (const exception& ex) {
+                cerr << "Error line " << ins.lineNumber << ": " << ex.what() << "\n";
+                fs::remove_all(tempRootfs);
+                exit(1);
+            }
             cout << " ---> CMD set\n";
         }
 
@@ -478,25 +563,14 @@ void executeBuild(const string& name, const string& tag,
             // FIX 7: Resolve source with glob support
             vector<string> resolvedSrcs;
             if (copySrc == "." || copySrc == "./") {
-                // Copy entire context dir
-                for (auto& e : fs::recursive_directory_iterator(contextDir,
-                         fs::directory_options::skip_permission_denied)) {
-                    if (fs::is_regular_file(e))
-                        resolvedSrcs.push_back(e.path().string());
-                }
-                sort(resolvedSrcs.begin(), resolvedSrcs.end());
+                resolvedSrcs = collectRecursiveSources(contextDir);
             } else {
                 resolvedSrcs = resolveGlob(contextDir, copySrc);
                 if (resolvedSrcs.empty()) {
                     // Fall back: check if it's a literal directory
                     string srcAbs = contextDir + "/" + copySrc;
                     if (fs::is_directory(srcAbs)) {
-                        for (auto& e : fs::recursive_directory_iterator(srcAbs,
-                                 fs::directory_options::skip_permission_denied)) {
-                            if (fs::is_regular_file(e))
-                                resolvedSrcs.push_back(e.path().string());
-                        }
-                        sort(resolvedSrcs.begin(), resolvedSrcs.end());
+                        resolvedSrcs = collectRecursiveSources(srcAbs);
                     } else {
                         cerr << "Error: COPY source not found: " << srcAbs << "\n";
                         fs::remove_all(tempRootfs); exit(1);
@@ -506,13 +580,24 @@ void executeBuild(const string& name, const string& tag,
 
             // Build srcFiles: {absPath, relToContext}
             vector<pair<string,string>> srcFiles;
+            string srcAbs = contextDir + "/" + copySrc;
+            string basePrefix = hasGlobChars(copySrc) ? globLiteralBase(copySrc) : copySrc;
+            fs::path relBase = contextDir;
+            if (!basePrefix.empty()) relBase /= basePrefix;
+
             for (auto& absPath : resolvedSrcs) {
-                if (!fs::is_regular_file(absPath)) continue;
-                // Check if inside a resolved sub-directory or just a file match
-                string srcAbs = contextDir + "/" + copySrc;
+                if (!fs::is_regular_file(absPath) && !fs::is_symlink(absPath)) continue;
                 string rel;
-                if (fs::is_directory(srcAbs)) {
+                if (copySrc == "." || copySrc == "./") {
+                    rel = fs::relative(absPath, contextDir).generic_string();
+                } else if (!hasGlobChars(copySrc) && fs::is_directory(srcAbs)) {
                     rel = fs::relative(absPath, srcAbs).string();
+                } else if (hasGlobChars(copySrc)) {
+                    if (fs::exists(relBase) && fs::is_directory(relBase)) {
+                        rel = fs::relative(absPath, relBase).generic_string();
+                    } else {
+                        rel = fs::relative(absPath, contextDir).generic_string();
+                    }
                 } else {
                     rel = fs::path(absPath).filename().string();
                 }
