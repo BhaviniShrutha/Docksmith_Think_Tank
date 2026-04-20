@@ -116,15 +116,15 @@ int runIsolated(const string& rootfs, const string& workdir,
 // ──────────────────────────────────────────────
 // docksmith run
 // ──────────────────────────────────────────────
-void runContainer(const string& name, const string& tag,
-                  const map<string,string>& envOverrides,
-                  const vector<string>& cmdOverride) {
+int runContainer(const string& name, const string& tag,
+                 const map<string,string>& envOverrides,
+                 const vector<string>& cmdOverride) {
     string home = getenv("HOME");
     string mpath = home + "/.docksmith/images/" + name + "_" + tag + ".json";
 
     if (!fs::exists(mpath)) {
         cerr << "Error: Image " << name << ":" << tag << " not found\n";
-        exit(1);  // FIX 14
+        return 1;
     }
 
     Manifest m = loadManifest(mpath);
@@ -139,7 +139,7 @@ void runContainer(const string& name, const string& tag,
         if (!fs::exists(tp)) {
             cerr << "Error: Missing layer " << layer.digest << "\n";
             fs::remove_all(rootfs);
-            exit(1);  // FIX 14
+            return 1;
         }
         extractLayer(tp, rootfs);
     }
@@ -161,13 +161,14 @@ void runContainer(const string& name, const string& tag,
     if (finalCmd.empty()) {
         cerr << "Error: No command specified and image has no default CMD\n";
         fs::remove_all(rootfs);
-        exit(1);  // FIX 14
+        return 1;
     }
 
     int exitCode = runIsolated(rootfs, m.workingDir, merged, finalCmd);
     cout << "Container exited with code: " << exitCode << endl;
 
     fs::remove_all(rootfs);
+    return exitCode >= 0 ? exitCode : 1;
 }
 
 // ──────────────────────────────────────────────

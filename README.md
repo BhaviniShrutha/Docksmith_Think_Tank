@@ -113,7 +113,7 @@ sudo ./build/docksmith run myapp:latest /bin/sh -c "echo custom command"
 sudo ./build/docksmith rmi myapp:latest
 ```
 
-> Shared layers (e.g. the Alpine base layer) are **not** deleted — only layers unique to the removed image are cleaned up.
+> `rmi` deletes every layer referenced by the removed image. Shared layers are not reference-counted and may disappear for other images too.
 
 ---
 
@@ -170,7 +170,7 @@ CMD ["/bin/sh", "app.sh"]  # Default command when running the image
 
 **Supported instructions**: `FROM`, `WORKDIR`, `ENV`, `COPY`, `RUN`, `CMD`
 
-**`CMD` format**: JSON array `["bin", "arg1"]` or shell form `command arg1 arg2` (wrapped as `/bin/sh -c`).
+**`CMD` format**: JSON array only, e.g. `["/bin/sh", "app.sh"]`.
 
 ---
 
